@@ -449,7 +449,7 @@ button:focus-visible,a:focus-visible{outline:2px solid var(--ink);outline-offset
           </div>
           <div class="profile-card passkey-card">
             <h5 class="wide">Biometric Passkeys</h5>
-            <p>Sign in with this device's fingerprint or face unlock. Your fingerprint never leaves the device. Passkeys are remembered in this browser only.</p>
+            <p>Register one phone, then lock the site to it. Your fingerprint never leaves the phone.</p>
             <div class="passkey-list" id="passkeyList"></div>
             <form class="passkey-add" id="passkeyAddForm">
               <div class="form-group">
@@ -457,9 +457,15 @@ button:focus-visible,a:focus-visible{outline:2px solid var(--ink);outline-offset
                 <input type="text" id="passkeyLabel" maxlength="40" placeholder="My phone">
               </div>
                             <div class="admin-err" id="passkeyErr" role="alert"></div>
-              <button type="submit" class="action-btn primary wide">Add This Device</button>
+              <button type="submit" class="action-btn primary wide">Register This Device</button>
             </form>
-                      </div>
+            <p id="passkeyLocked" style="display:none">This site is locked to this one phone. Other devices can't sign in.</p>
+            <div class="passkey-add" id="passkeyLock" style="display:none">
+              <p class="passkey-empty"><b>Last step:</b> copy this line. On GitHub, edit index.html, find the line starting <code>const OWNER_PASSKEY&#61;null;</code>, and replace that whole line with this one. It holds only your public key, which is safe to publish.</p>
+              <textarea id="passkeyLockLine" readonly rows="4" aria-label="Line to paste into index.html" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;font:12px/1.4 monospace;background:#fff;resize:none"></textarea>
+              <button type="button" class="action-btn primary wide" id="passkeyCopyBtn">Copy Line</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -700,13 +706,14 @@ const adminErr=$('adminErr');
 let isAdminLoggedIn=false,adminProfile={name:'',email:'',phone:'',role:''},lastFocus=null;
 
 // No server on GitHub Pages: admin data lives in this browser and the same calls are answered here
+const OWNER_PASSKEY=null; // after setup, the admin panel gives you the line to replace this one with
 const LOCAL_KEY='maison_local',UNLOCK_KEY='maison_local_unlocked';
 let memoryStore=null,memoryUnlocked=false;
 
 function readLocal(){
   let saved=memoryStore;
   try{saved=JSON.parse(localStorage.getItem(LOCAL_KEY))||saved}catch(e){}
-  return {catalog:null,profile:null,passkeys:[],...saved};
+  return {catalog:null,profile:null,passkeys:[],...saved,...(OWNER_PASSKEY?{passkeys:[OWNER_PASSKEY]}:{})};
 }
 function writeLocal(data){
   memoryStore=data;
@@ -740,6 +747,7 @@ async function api(path,method='GET',body){
   }
   if(path==='/api/passkeys')return {passkeys:publicPasskeys(data)};
   if(path.startsWith('/api/passkeys/')&&method==='DELETE'){
+    if(OWNER_PASSKEY)throw new Error('This site is locked to one phone. To change it, edit OWNER_PASSKEY in the file on GitHub.');
     const id=decodeURIComponent(path.slice('/api/passkeys/'.length));
     data.passkeys=data.passkeys.filter(p=>p.id!==id);writeLocal(data);return {passkeys:publicPasskeys(data)};
   }
@@ -977,6 +985,7 @@ function derToRaw(der){
 
 async function registerDevice(label){
   const stored=readLocal();
+  if(stored.passkeys.length)throw new Error('Only one fingerprint device is allowed.');
   const challenge=crypto.getRandomValues(new Uint8Array(32)).buffer;
   const cred=await navigator.credentials.create({publicKey:{
     challenge,
@@ -1037,6 +1046,10 @@ $('passkeySetupBtn').addEventListener('click',e=>finishDeviceSignIn(e.currentTar
 function renderPasskeys(items){
   passkeyInfo.login=items.length>0;
   updatePasskeyLogin();
+  $('passkeyAddForm').style.display=passkeySupported()&&!items.length?'flex':'none';
+  $('passkeyLocked').style.display=OWNER_PASSKEY?'block':'none';
+  $('passkeyLock').style.display=!OWNER_PASSKEY&&items.length?'flex':'none';
+  if(!OWNER_PASSKEY&&items.length)$('passkeyLockLine').value=`const OWNER_PASSKEY=${JSON.stringify(readLocal().passkeys[0])};`;
   const list=$('passkeyList');
   list.textContent='';
   if(!items.length){
@@ -1055,7 +1068,8 @@ function renderPasskeys(items){
       if(!confirm(`Remove the passkey "${label}" from this browser?`))return;
       try{renderPasskeys((await api('/api/passkeys/'+encodeURIComponent(id),'DELETE')).passkeys)}catch(err){reportAdminError(err)}
     });
-    row.append(info,remove);
+    row.append(info);
+    if(!OWNER_PASSKEY)row.append(remove);
     list.append(row);
   });
 }
@@ -1063,6 +1077,12 @@ function renderPasskeys(items){
 function loadPasskeys(){
   api('/api/passkeys').then(({passkeys})=>renderPasskeys(passkeys)).catch(reportAdminError);
 }
+
+$('passkeyCopyBtn').addEventListener('click',async e=>{
+  const line=$('passkeyLockLine'),button=e.currentTarget;
+  line.select();
+  try{await navigator.clipboard.writeText(line.value);button.textContent='Copied'}catch(err){button.textContent='Select and copy the text above'}
+});
 
 $('passkeyAddForm').addEventListener('submit',async e=>{
   e.preventDefault();
